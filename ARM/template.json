@@ -1,0 +1,135 @@
+{
+    "$schema": "https://schema.management.azure.com/schemas/2015-01-01/deploymentTemplate.json#",
+    "contentVersion": "1.0.0.0",
+    "parameters": {
+        "appName": {
+            "type": "string",
+            "defaultValue": ""
+        },
+        "storageAccountName": {
+            "type": "string",
+            "defaultValue": ""
+        },
+        "fileShareName": {
+            "type": "string",
+            "defaultValue": "elastic"
+        },
+        "sku": {
+            "type": "string",
+            "defaultValue": "P1v2"
+        },
+        "dockerImageName": {
+            "type": "string",
+            "defaultValue": "elastic-xpack:latest"
+        },
+        "bootstrapElasticPassword": {
+            "type": "securestring",
+            "defaultValue": "s3cr3t"
+        },
+        "containerRegistryName": {
+            "type": "string",
+            "defaultValue": ""
+        },
+        "containerRegistryUsername": {
+            "type": "string",
+            "defaultValue": ""
+        },
+        "containerRegistryPassword": {
+            "type": "securestring",
+            "defaultValue": ""
+        }
+    },
+    "variables": {
+        "hostingPlanName": "[concat(resourceGroup().name, '-ap')]",
+        "containerRegistryUrl": "[concat('https://', parameters('containerRegistryName'), '.azurecr.io')]",
+        "dockerImageFullName": "[concat(parameters('containerRegistryName'), '.azurecr.io/', parameters('dockerImageName'))]"
+    },
+    "resources": [
+        {
+            "type": "Microsoft.Storage/storageAccounts",
+            "name": "[parameters('storageAccountName')]",
+            "apiVersion": "2019-06-01",
+            "location": "[resourceGroup().location]",
+            "sku": {
+                "name": "Standard_LRS"
+            },
+            "kind": "StorageV2"
+        },
+        {
+            "type": "Microsoft.Storage/storageAccounts/fileServices/shares",
+            "apiVersion": "2019-06-01",
+            "name": "[concat(parameters('storageAccountName'), '/default/', parameters('fileShareName'))]",
+            "dependsOn": [
+                "[resourceId('Microsoft.Storage/storageAccounts', parameters('storageAccountName'))]"
+            ]
+        },
+        {
+            "type": "Microsoft.Web/sites",
+            "apiVersion": "2018-11-01",
+            "name": "[parameters('appName')]",
+            "location": "[resourceGroup().location]",
+            "kind": "app,linux,container",
+            "properties": {
+                "serverFarmId": "[resourceId('Microsoft.Web/serverfarms', variables('hostingPlanName'))]",
+                "siteConfig": {
+                    "appSettings": [
+                        {
+                            "name": "ELASTIC_PASSWORD",
+                            "value": "[parameters('bootstrapElasticPassword')]"
+                        },
+                        {
+                            "name": "DOCKER_REGISTRY_SERVER_URL",
+                            "value": "[variables('containerRegistryUrl')]"
+                        },
+                        {
+                            "name": "DOCKER_REGISTRY_SERVER_USERNAME",
+                            "value": "[parameters('containerRegistryUsername')]"
+                        },
+                        {
+                            "name": "DOCKER_REGISTRY_SERVER_PASSWORD",
+                            "value": "[parameters('containerRegistryPassword')]"
+                        }
+                    ]
+                }
+            },
+            "dependsOn": [
+                "[resourceId('Microsoft.Web/serverfarms', variables('hostingPlanName'))]",
+                "[resourceId('Microsoft.Storage/storageAccounts', parameters('storageAccountName'))]"
+            ]
+        },
+        {
+            "type": "Microsoft.Web/sites/config",
+            "apiVersion": "2018-11-01",
+            "name": "[concat(parameters('appName'), '/web')]",
+            "location": "[resourceGroup().location]",
+            "dependsOn": [
+                "[resourceId('Microsoft.Web/sites', parameters('appName'))]",
+                "[resourceId('Microsoft.Storage/storageAccounts', parameters('storageAccountName'))]"
+            ],
+            "properties": {
+                "linuxFxVersion": "[concat('DOCKER|', variables('dockerImageFullName'))]",
+                "azureStorageAccounts": {
+                    "elasticid": {
+                        "type": "AzureFiles",
+                        "accountName": "[parameters('storageAccountName')]",
+                        "shareName": "[parameters('fileShareName')]",
+                        "mountPath": "/mnt/elastic",
+                        "accessKey": "[listKeys(resourceId('Microsoft.Storage/storageAccounts', parameters('storageAccountName')), '2019-04-01').keys[0].value]"
+                    }
+                }
+            }
+        },
+        {
+            "apiVersion": "2020-06-01",
+            "name": "[variables('hostingPlanName')]",
+            "type": "Microsoft.Web/serverfarms",
+            "location": "[resourceGroup().location]",
+            "sku": {
+                "name": "[parameters('sku')]"
+            },
+            "properties": {
+                "reserved": true
+            }
+        }
+    ]
+}

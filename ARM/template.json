@@ -1,8 +1,8 @@
 {
-    "$schema": "https://schema.management.azure.com/schemas/2015-01-01/deploymentTemplate.json#",
+    "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
     "contentVersion": "1.0.0.0",
     "parameters": {
-        "appName": {
+        "webAppName": {
             "type": "string",
             "defaultValue": ""
         },
@@ -14,35 +14,27 @@
             "type": "string",
             "defaultValue": "elastic"
         },
-        "sku": {
+        "webAppSku": {
             "type": "string",
             "defaultValue": "P1v2"
         },
         "dockerImageName": {
             "type": "string",
-            "defaultValue": "elastic-xpack:latest"
+            "defaultValue": "msimecek/elastic-xpack:7.9.1"
         },
-        "bootstrapElasticPassword": {
-            "type": "securestring",
-            "defaultValue": "s3cr3t"
-        },
-        "containerRegistryName": {
-            "type": "string",
-            "defaultValue": ""
-        },
-        "containerRegistryUsername": {
-            "type": "string",
-            "defaultValue": ""
-        },
-        "containerRegistryPassword": {
+        "elasticPassword": {
             "type": "securestring",
             "defaultValue": ""
         }
     },
     "variables": {
-        "hostingPlanName": "[concat(resourceGroup().name, '-ap')]",
-        "containerRegistryUrl": "[concat('https://', parameters('containerRegistryName'), '.azurecr.io')]",
-        "dockerImageFullName": "[concat(parameters('containerRegistryName'), '.azurecr.io/', parameters('dockerImageName'))]"
+        "appServicePlanName": "[concat(parameters('webAppName'), '-ap')]",
+        "keyVaultName": "[concat(parameters('webAppName'), '-kv')]",
+        "logAnalyticsName": "[concat(parameters('webAppName'), '-logs')]",
+        "diagnosticSettingName": "[parameters('webAppName')]",
+        "dockerImageFullName": "[parameters('dockerImageName')]",
+        "elasticPasswordName": "elasticPassword",
+        "elasticPassword": "[parameters('elasticPassword')]"
     },
     "resources": [
         {
@@ -66,45 +58,45 @@
         {
             "type": "Microsoft.Web/sites",
             "apiVersion": "2018-11-01",
-            "name": "[parameters('appName')]",
+            "name": "[parameters('webAppName')]",
             "location": "[resourceGroup().location]",
             "kind": "app,linux,container",
+            "identity": {
+                "type": "SystemAssigned"
+            },
             "properties": {
-                "serverFarmId": "[resourceId('Microsoft.Web/serverfarms', variables('hostingPlanName'))]",
-                "siteConfig": {
-                    "appSettings": [
-                        {
-                            "name": "ELASTIC_PASSWORD",
-                            "value": "[parameters('bootstrapElasticPassword')]"
-                        },
-                        {
-                            "name": "DOCKER_REGISTRY_SERVER_URL",
-                            "value": "[variables('containerRegistryUrl')]"
-                        },
-                        {
-                            "name": "DOCKER_REGISTRY_SERVER_USERNAME",
-                            "value": "[parameters('containerRegistryUsername')]"
-                        },
-                        {
-                            "name": "DOCKER_REGISTRY_SERVER_PASSWORD",
-                            "value": "[parameters('containerRegistryPassword')]"
-                        }
-                    ]
-                }
+                "serverFarmId": "[resourceId('Microsoft.Web/serverfarms', variables('appServicePlanName'))]"
             },
             "dependsOn": [
-                "[resourceId('Microsoft.Web/serverfarms', variables('hostingPlanName'))]",
-                "[resourceId('Microsoft.Storage/storageAccounts', parameters('storageAccountName'))]"
+                "[resourceId('Microsoft.Web/serverfarms', variables('appServicePlanName'))]",
+                "[resourceId('Microsoft.Storage/storageAccounts', parameters('storageAccountName'))]",
+                "[resourceId('Microsoft.Storage/storageAccounts/fileServices/shares', parameters('storageAccountName'), 'default', parameters('fileShareName'))]"
+            ],
+            "resources": [
+                {
+                    "type": "config",
+                    "name": "appsettings",
+                    "apiVersion": "2018-11-01",
+                    "dependsOn": [
+                        "[resourceId('Microsoft.Web/sites', parameters('webAppName'))]",
+                        "[resourceId('Microsoft.KeyVault/vaults/', variables('keyVaultName'))]",
+                        "[resourceId('Microsoft.KeyVault/vaults/secrets', variables('keyVaultName'), variables('elasticPasswordName'))]"
+                    ],
+                    "properties": {
+                        "ELASTIC_PASSWORD": "[concat('@Microsoft.KeyVault(SecretUri=', reference(resourceId('Microsoft.KeyVault/vaults/secrets', variables('keyVaultName'), variables('elasticPasswordName'))).secretUriWithVersion, ')')]"
+                    }
+                }
             ]
         },
         {
             "type": "Microsoft.Web/sites/config",
             "apiVersion": "2018-11-01",
-            "name": "[concat(parameters('appName'), '/web')]",
+            "name": "[concat(parameters('webAppName'), '/web')]",
             "location": "[resourceGroup().location]",
             "dependsOn": [
-                "[resourceId('Microsoft.Web/sites', parameters('appName'))]",
-                "[resourceId('Microsoft.Storage/storageAccounts', parameters('storageAccountName'))]"
+                "[resourceId('Microsoft.Web/sites', parameters('webAppName'))]",
+                "[resourceId('Microsoft.Storage/storageAccounts', parameters('storageAccountName'))]",
+                "[resourceId('Microsoft.Storage/storageAccounts/fileServices/shares', parameters('storageAccountName'), 'default', parameters('fileShareName'))]"
             ],
             "properties": {
                 "linuxFxVersion": "[concat('DOCKER|', variables('dockerImageFullName'))]",
@@ -121,15 +113,105 @@
         },
         {
             "apiVersion": "2020-06-01",
-            "name": "[variables('hostingPlanName')]",
+            "name": "[variables('appServicePlanName')]",
             "type": "Microsoft.Web/serverfarms",
             "location": "[resourceGroup().location]",
             "sku": {
-                "name": "[parameters('sku')]"
+                "name": "[parameters('webAppSku')]"
             },
             "properties": {
                 "reserved": true
             }
+        },
+        {
+            "apiVersion": "2019-09-01",
+            "type": "Microsoft.KeyVault/vaults",
+            "name": "[variables('keyVaultName')]",
+            "location": "[resourceGroup().location]",
+            "dependsOn": [
+                "[resourceId('Microsoft.Web/sites', parameters('webAppName'))]"
+            ],
+            "properties": {
+                "tenantId": "[subscription().tenantId]",
+                "sku": {
+                    "name": "standard",
+                    "family": "A"
+                },
+                "accessPolicies": [
+                    {
+                        "tenantId": "[reference(resourceId('Microsoft.Web/sites', parameters('webAppName')),'2020-06-01', 'Full').identity.tenantId]",
+                        "objectId": "[reference(resourceId('Microsoft.Web/sites', parameters('webAppName')),'2020-06-01', 'Full').identity.principalId]",
+                        "permissions": {
+                            "secrets": [ "get" ]
+                        }
+                    }
+                ]
+            },
+            "resources": [
+                {
+                    "apiVersion": "2019-09-01",
+                    "type": "secrets",
+                    "name": "[variables('elasticPasswordName')]",
+                    "dependsOn": [
+                        "[resourceId('Microsoft.KeyVault/vaults/', variables('keyVaultName'))]"
+                    ],
+                    "properties": {
+                        "value": "[variables('elasticPassword')]"
+                    }
+                }
+            ]
+        },
+        {
+            "type": "Microsoft.OperationalInsights/workspaces",
+            "apiVersion": "2020-03-01-preview",
+            "name": "[variables('logAnalyticsName')]",
+            "location": "[resourceGroup().location]",
+            "properties": {
+                "sku": {
+                    "name": "pergb2018"
+                },
+                "retentionInDays": 120,
+                "features": {
+                    "searchVersion": 1,
+                    "legacy": 0,
+                    "enableLogAccessUsingOnlyResourcePermissions": true
+                }
+            }
+        },
+        {
+          "type": "Microsoft.Web/sites/providers/diagnosticSettings",
+          "apiVersion": "2017-05-01-preview",
+          "name": "[concat(parameters('webAppName'), '/Microsoft.Insights/', variables('diagnosticSettingName'))]",
+          "dependsOn": [
+              "[resourceId('Microsoft.Web/sites', parameters('webAppName'))]"
+          ],
+          "properties": {
+            "workspaceId": "[resourceId('Microsoft.OperationalInsights/workspaces', variables('logAnalyticsName'))]",
+            "logs": [
+              {
+                "category": "AppServicePlatformLogs",
+                "enabled": true
+              },
+              {
+                "category": "AppServiceConsoleLogs",
+                "enabled": true
+              },
+              {
+                "category": "AppServiceHTTPLogs",
+                "enabled": true
+              }
+            ]
+          }
         }
-    ]
+    ],
+    "outputs": {
+        "webAppName": {
+            "type": "string",
+            "value": "[parameters('webAppName')]"
+        },
+        "keyVaultName": {
+            "type": "string",
+            "value": "[variables('keyVaultName')]"
+        }
+    }
 }

@@ -21,7 +21,7 @@ $body = "{
   `"cluster`": [`"all`"],
   `"indices`": [
     {
-      `"names`": [ `"all`" ],
+      `"names`": [ `"*`" ],
       `"privileges`": [`"all`"]
     }
   ]
